@@ -4,6 +4,6 @@
   "version": "1.0.0",
   "minAppVersion": "1.5.0",
   "description": "Windows Explorer style file manager in a tab.",
-  "author": "George",
+  "author": "George Dabre",
   "isDesktopOnly": false
 }
