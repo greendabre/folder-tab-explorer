@@ -120,3 +120,25 @@
     background-color: var(--background-modifier-active-hover);
     outline: 2px dashed var(--interactive-accent);
 }
+
+/* Chevron toggle */
+.win-item-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    font-size: 10px;
+    color: var(--text-muted);
+    user-select: none;
+    margin-right: 2px;
+}
+
+.win-item-arrow.is-spacer {
+    visibility: hidden;
+}
+
+.win-item-arrow:hover {
+    color: var(--text-normal);
+}
