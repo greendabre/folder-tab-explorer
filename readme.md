@@ -32,7 +32,7 @@ Features:
     * **File/Subfolder Menu:** Right-click menus include Open in new explorer tab (for folders), Cut, Copy, Paste, Rename, Delete, and hook into Obsidian's full native menu suite (Bookmarks, Search, Templater, etc.).
     * **Whitespace Menu:** Right-clicking blank space opens the current folder's actions, enabling direct pasting and triggering Obsidian's native folder menu (New note, New folder, New canvas, New base, Search in folder, templates, etc.).
 11. **Auto-Refreshing File Tree:** Real-time listeners hook into vault events (create, delete, rename) to repaint and sync explorer contents when modifications happen elsewhere in the app.
-12. **Mobile & Touch Compatibility:**
+12. **Mobile & Touch Compatibility:** NOT TESTED
     * Touch targets scaled for phones.
     * Single-tap execution on mobile devices for navigating folders and opening files.
     * Full mobile context menu support via long-press gestures.
