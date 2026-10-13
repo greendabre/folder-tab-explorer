@@ -1,0 +1,122 @@
+.win-explorer-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    outline: none;
+    user-select: none;
+    background-color: var(--background-primary);
+}
+
+.win-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.win-btn {
+    padding: 4px 10px;
+    background: var(--interactive-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.win-btn:hover {
+    background: var(--interactive-hover);
+}
+
+.win-address-bar {
+    flex-grow: 1;
+    font-family: var(--font-monospace);
+    font-size: 13px;
+    padding: 4px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 3px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+
+.win-items-area {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+
+.win-item-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 2px;
+    cursor: default;
+    border: 1px solid transparent;
+}
+
+.win-item-row:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.win-item-row.is-selected {
+    background-color: var(--nav-item-background-active, var(--interactive-accent-hover));
+    color: var(--text-on-accent, var(--text-normal));
+}
+
+.win-item-icon {
+    font-size: 16px;
+    margin-right: 8px;
+    width: 20px;
+    display: flex;
+    justify-content: center;
+}
+
+.win-item-label-container {
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+}
+
+.win-item-label {
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.win-rename-input {
+    font-size: 13px;
+    padding: 1px 4px;
+    border: 1px solid var(--interactive-accent);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    outline: none;
+    width: 100%;
+}
+
+/* Selection marquee rubber-band box */
+.win-selection-box {
+    position: absolute;
+    border: 1px solid var(--interactive-accent);
+    background-color: rgba(var(--interactive-accent-rgb, 120, 120, 255), 0.2);
+    pointer-events: none;
+    z-index: 100;
+}
+
+/* Make container relative for selection box positioning */
+.win-items-area {
+    position: relative;
+}
+
+/* Cut items visual dimming */
+.win-item-row.is-cut {
+    opacity: 0.45;
+}
+
+/* Drag & Drop hover highlight over folders */
+.win-item-row.is-drag-over {
+    background-color: var(--background-modifier-active-hover);
+    outline: 2px dashed var(--interactive-accent);
+}
