@@ -80,6 +80,12 @@ class WindowsExplorerTabView extends ItemView {
             const prev = this.history.pop();
             this.forwardHistory.push(this.currentPath);
             this.navigateTo(prev, false);
+        } else if (this.currentPath !== "") {
+            const parts = this.currentPath.split("/");
+            parts.pop();
+            const parent = parts.join("/");
+            this.forwardHistory.push(this.currentPath);
+            this.navigateTo(parent, false);
         } else {
             new Notice("No previous folder in history.");
         }
@@ -111,7 +117,13 @@ class WindowsExplorerTabView extends ItemView {
     }
 
     refresh() {
-        this.navigateTo(this.currentPath);
+        const container = this.containerEl.querySelector(".win-items-area");
+        const savedScrollTop = container ? container.scrollTop : 0;
+        this.navigateTo(this.currentPath, false);
+        const updatedContainer = this.containerEl.querySelector(".win-items-area");
+        if (updatedContainer) {
+            updatedContainer.scrollTop = savedScrollTop;
+        }
     }
 
     loadFolderContents(folder) {
@@ -511,12 +523,22 @@ class WindowsExplorerTabView extends ItemView {
     }
 
     beginInlineRename(item, labelContainer, label) {
+        const row = labelContainer.closest(".win-item-row");
+        if (row) {
+            row.draggable = false;
+        }
+
         label.style.display = "none";
         const input = labelContainer.createEl("input", {
             cls: "win-rename-input",
             value: item.name
         });
         input.focus();
+
+        // Prevent row selection, dragging, and container focus shifts when selecting text in input
+        input.addEventListener("mousedown", (e) => e.stopPropagation());
+        input.addEventListener("click", (e) => e.stopPropagation());
+        input.addEventListener("dblclick", (e) => e.stopPropagation());
 
         if (item instanceof TFile && item.extension) {
             const extLength = item.extension.length + 1;
@@ -525,7 +547,14 @@ class WindowsExplorerTabView extends ItemView {
             input.select();
         }
 
+        const restoreRow = () => {
+            if (row) {
+                row.draggable = true;
+            }
+        };
+
         const commitRename = async () => {
+            restoreRow();
             const newName = input.value.trim();
             input.remove();
             label.style.display = "";
@@ -534,7 +563,6 @@ class WindowsExplorerTabView extends ItemView {
                 const parentPath = item.parent && item.parent.path !== "/" ? item.parent.path : "";
                 const newPath = parentPath ? `${parentPath}/${newName}` : newName;
                 try {
-                    // Triggers Obsidian's link resolver to update backlinks vault-wide
                     await this.app.fileManager.renameFile(item, newPath);
                     this.refresh();
                 } catch (err) {
@@ -548,6 +576,7 @@ class WindowsExplorerTabView extends ItemView {
             if (e.key === "Enter") {
                 commitRename();
             } else if (e.key === "Escape") {
+                restoreRow();
                 input.remove();
                 label.style.display = "";
             }
@@ -569,11 +598,111 @@ class WindowsExplorerTabView extends ItemView {
         }
     }
 
+async createNewItem(type, targetFolder) {
+        const folderPath = targetFolder.path === "/" ? "" : targetFolder.path;
+        let ext = "";
+        let defaultName = "";
+
+        if (type === "note") {
+            ext = ".md";
+            defaultName = "Untitled";
+        } else if (type === "canvas") {
+            ext = ".canvas";
+            defaultName = "Untitled";
+        } else if (type === "base") {
+            ext = ".base";
+            defaultName = "Untitled";
+        }
+
+        if (type === "folder") {
+            let counter = 0;
+            let folderName = "Untitled folder";
+            let newPath = folderPath ? `${folderPath}/${folderName}` : folderName;
+            while (await this.app.vault.adapter.exists(newPath)) {
+                counter++;
+                folderName = `Untitled folder ${counter}`;
+                newPath = folderPath ? `${folderPath}/${folderName}` : folderName;
+            }
+            await this.app.vault.createFolder(newPath);
+            this.refresh();
+            return;
+        }
+
+        let counter = 0;
+        let baseName = defaultName;
+        let newPath = folderPath ? `${folderPath}/${baseName}${ext}` : `${baseName}${ext}`;
+        while (await this.app.vault.adapter.exists(newPath)) {
+            counter++;
+            baseName = `${defaultName} ${counter}`;
+            newPath = folderPath ? `${folderPath}/${baseName}${ext}` : `${baseName}${ext}`;
+        }
+
+        const newFile = await this.app.vault.create(newPath, "");
+        this.refresh();
+        if (newFile instanceof TFile) {
+            this.app.workspace.getLeaf("tab").openFile(newFile);
+        }
+    }
+
+    populateCoreFolderActions(menu, folder) {
+        menu.addItem((i) =>
+            i.setTitle("New note").setIcon("edit").onClick(() => {
+                this.createNewItem("note", folder);
+            })
+        );
+
+        menu.addItem((i) =>
+            i.setTitle("New folder").setIcon("folder").onClick(() => {
+                this.createNewItem("folder", folder);
+            })
+        );
+
+        menu.addItem((i) =>
+            i.setTitle("New canvas").setIcon("layout-grid").onClick(() => {
+                this.createNewItem("canvas", folder);
+            })
+        );
+
+        // Core base creation support if available
+        menu.addItem((i) =>
+            i.setTitle("New base").setIcon("table").onClick(() => {
+                this.createNewItem("base", folder);
+            })
+        );
+
+        menu.addSeparator();
+
+        menu.addItem((i) =>
+            i.setTitle("Make a copy").setIcon("documents").onClick(async () => {
+                if (folder instanceof TFile) {
+                    const ext = folder.extension ? `.${folder.extension}` : "";
+                    const parent = folder.parent ? folder.parent.path : "";
+                    const copyPath = parent ? `${parent}/${folder.basename} 1${ext}` : `${folder.basename} 1${ext}`;
+                    const content = await this.app.vault.readBinary(folder);
+                    await this.app.vault.createBinary(copyPath, content);
+                    this.refresh();
+                }
+            })
+        );
+
+        menu.addItem((i) =>
+            i.setTitle("Search in folder").setIcon("search").onClick(() => {
+                const searchPlugin = this.app.internalPlugins?.getPluginById("global-search");
+                if (searchPlugin && searchPlugin.instance) {
+                    const query = `path:"${folder.path}"`;
+                    searchPlugin.instance.openGlobalSearch(query);
+                }
+            })
+        );
+    }
+
     showContextMenu(e, item, labelContainer, label) {
         const menu = new Menu();
 
-        // 1. If it's a folder, provide the Windows Explorer open tab option first
         if (item instanceof TFolder) {
+            this.populateCoreFolderActions(menu, item);
+            menu.addSeparator();
+
             menu.addItem((i) =>
                 i.setTitle("Open in new explorer tab").setIcon("external-link").onClick(() => {
                     this.plugin.openExplorerTab(item.path);
@@ -582,7 +711,6 @@ class WindowsExplorerTabView extends ItemView {
             menu.addSeparator();
         }
 
-        // 2. Windows Explorer operations (Cut, Copy, Paste)
         menu.addItem((i) =>
             i.setTitle("Cut").setIcon("scissors").onClick(() => {
                 this.setClipboard("cut");
@@ -605,7 +733,21 @@ class WindowsExplorerTabView extends ItemView {
 
         menu.addSeparator();
 
-        // 3. Populate all standard Obsidian items & plugins (New note/canvas/base, Bookmarks, Templates, etc.)
+        menu.addItem((i) =>
+            i.setTitle("Rename...").setIcon("pencil").onClick(() => {
+                this.beginInlineRename(item, labelContainer, label);
+            })
+        );
+
+        menu.addItem((i) =>
+            i.setTitle("Delete").setIcon("trash").onClick(async () => {
+                await this.deleteSelected();
+            })
+        );
+
+        menu.addSeparator();
+
+        // Community plugins and core file options (Bookmarks, Move, Templater, Ask Gemini, etc.)
         this.app.workspace.trigger("file-menu", menu, item, "file-explorer", this.leaf);
 
         menu.showAtMouseEvent(e);
@@ -619,7 +761,9 @@ class WindowsExplorerTabView extends ItemView {
 
         if (!currentFolder) return;
 
-        // Windows Explorer Paste if something is in the clipboard
+        this.populateCoreFolderActions(menu, currentFolder);
+        menu.addSeparator();
+
         if (this.plugin.clipboard && this.plugin.clipboard.paths.length > 0) {
             menu.addItem((i) =>
                 i.setTitle("Paste").setIcon("clipboard").onClick(() => {
@@ -629,7 +773,7 @@ class WindowsExplorerTabView extends ItemView {
             menu.addSeparator();
         }
 
-        // Populate every native folder option (New note, New folder, New canvas, New base, Search, Templates, etc.)
+        // Community plugins and folder hooks
         this.app.workspace.trigger("file-menu", menu, currentFolder, "file-explorer", this.leaf);
 
         menu.showAtMouseEvent(e);
@@ -645,6 +789,72 @@ class WindowsExplorerTabView extends ItemView {
         new Notice(`${action === "cut" ? "Cut" : "Copied"} ${count} item(s)`);
         this.plugin.notifyClipboardUpdate();
     }
+	
+	async getUniqueDestinationPath(destFolderPath, fileName) {
+        const lastDot = fileName.lastIndexOf(".");
+        const hasExt = lastDot > 0;
+        const base = hasExt ? fileName.substring(0, lastDot) : fileName;
+        const ext = hasExt ? fileName.substring(lastDot) : "";
+
+        const dirPrefix = destFolderPath ? `${destFolderPath}/` : "";
+        let candidatePath = `${dirPrefix}${fileName}`;
+
+        if (!await this.app.vault.adapter.exists(candidatePath)) {
+            return candidatePath;
+        }
+
+        // Try standard " - Copy"
+        candidatePath = `${dirPrefix}${base} - Copy${ext}`;
+        if (!await this.app.vault.adapter.exists(candidatePath)) {
+            return candidatePath;
+        }
+
+        // Increment " - Copy (2)", " - Copy (3)", etc.
+        let counter = 2;
+        while (await this.app.vault.adapter.exists(`${dirPrefix}${base} - Copy (${counter})${ext}`)) {
+            counter++;
+        }
+
+        return `${dirPrefix}${base} - Copy (${counter})${ext}`;
+    }
+	
+	async mergeMoveFolder(sourceFolder, destFolderPath) {
+        if (!await this.app.vault.adapter.exists(destFolderPath)) {
+            await this.app.fileManager.renameFile(sourceFolder, destFolderPath);
+            return;
+        }
+
+        const children = [...sourceFolder.children];
+        for (const child of children) {
+            const childDestPath = `${destFolderPath}/${child.name}`;
+            if (child instanceof TFolder) {
+                await this.mergeMoveFolder(child, childDestPath);
+            } else if (child instanceof TFile) {
+                const uniquePath = await this.getUniqueDestinationPath(destFolderPath, child.name);
+                await this.app.fileManager.renameFile(child, uniquePath);
+            }
+        }
+
+        if (sourceFolder.children.length === 0) {
+            await this.app.vault.trash(sourceFolder, false);
+        }
+    }
+
+    async recursiveCopy(sourceItem, destPath) {
+        if (sourceItem instanceof TFile) {
+            const parent = destPath.substring(0, destPath.lastIndexOf("/"));
+            const uniquePath = await this.getUniqueDestinationPath(parent, sourceItem.name);
+            const content = await this.app.vault.readBinary(sourceItem);
+            await this.app.vault.createBinary(uniquePath, content);
+        } else if (sourceItem instanceof TFolder) {
+            if (!await this.app.vault.adapter.exists(destPath)) {
+                await this.app.vault.createFolder(destPath);
+            }
+            for (const child of sourceItem.children) {
+                await this.recursiveCopy(child, `${destPath}/${child.name}`);
+            }
+        }
+    }
 
     async pasteClipboard() {
         if (!this.plugin.clipboard || this.plugin.clipboard.paths.length === 0) return;
@@ -654,34 +864,30 @@ class WindowsExplorerTabView extends ItemView {
         new Notice(`Pasting ${paths.length} item(s)...`);
 
         for (const sourcePath of paths) {
-            const file = this.app.vault.getAbstractFileByPath(sourcePath);
-            if (!file) continue;
+            const item = this.app.vault.getAbstractFileByPath(sourcePath);
+            if (!item) continue;
 
-            const targetName = file.name;
+            const targetName = item.name;
             const newPath = destDir ? `${destDir}/${targetName}` : targetName;
 
             if (action === "cut") {
                 if (sourcePath !== newPath) {
                     try {
-                        await this.app.fileManager.renameFile(file, newPath);
+                        if (item instanceof TFolder) {
+                            await this.mergeMoveFolder(item, newPath);
+                        } else {
+                            const uniquePath = await this.getUniqueDestinationPath(destDir, item.name);
+                            await this.app.fileManager.renameFile(item, uniquePath);
+                        }
                     } catch (err) {
                         new Notice(`Move failed: ${err.message}`);
                     }
                 }
             } else if (action === "copy") {
-                if (file instanceof TFile) {
-                    try {
-                        let finalPath = newPath;
-                        if (await this.app.vault.adapter.exists(finalPath)) {
-                            const ext = file.extension ? `.${file.extension}` : "";
-                            const base = file.basename;
-                            finalPath = destDir ? `${destDir}/${base} - Copy${ext}` : `${base} - Copy${ext}`;
-                        }
-                        const content = await this.app.vault.readBinary(file);
-                        await this.app.vault.createBinary(finalPath, content);
-                    } catch (err) {
-                        new Notice(`Copy failed: ${err.message}`);
-                    }
+                try {
+                    await this.recursiveCopy(item, newPath);
+                } catch (err) {
+                    new Notice(`Copy failed: ${err.message}`);
                 }
             }
         }
@@ -708,16 +914,23 @@ class WindowsExplorerTabView extends ItemView {
     async moveItems(sourcePaths, targetFolderPath) {
         new Notice(`Moving ${sourcePaths.length} item(s)...`);
         for (const p of sourcePaths) {
-            const file = this.app.vault.getAbstractFileByPath(p);
-            if (!file) continue;
+            const item = this.app.vault.getAbstractFileByPath(p);
+            if (!item) continue;
+
             // Prevent dragging a folder inside itself
-            if (file instanceof TFolder && (targetFolderPath === p || targetFolderPath.startsWith(p + "/"))) {
+            if (item instanceof TFolder && (targetFolderPath === p || targetFolderPath.startsWith(p + "/"))) {
                 continue;
             }
-            const newPath = targetFolderPath ? `${targetFolderPath}/${file.name}` : file.name;
+
+            const newPath = targetFolderPath ? `${targetFolderPath}/${item.name}` : item.name;
             if (p !== newPath) {
                 try {
-                    await this.app.fileManager.renameFile(file, newPath);
+                    if (item instanceof TFolder) {
+                        await this.mergeMoveFolder(item, newPath);
+                    } else {
+                        const uniquePath = await this.getUniqueDestinationPath(targetFolderPath, item.name);
+                        await this.app.fileManager.renameFile(item, uniquePath);
+                    }
                 } catch (err) {
                     new Notice(`Move error: ${err.message}`);
                 }
@@ -775,7 +988,17 @@ class WindowsExplorerPlugin extends Plugin {
             active: true
         });
         if (leaf.view instanceof WindowsExplorerTabView && targetPath) {
-            leaf.view.navigateTo(targetPath);
+            // Seed parent history chain so the back button navigates one level up
+            const segments = targetPath.replace(/^\/+|\/+$/g, "").split("/");
+            const seededHistory = [""]; // Vault root
+            let accumulated = "";
+            for (let i = 0; i < segments.length - 1; i++) {
+                accumulated = accumulated ? `${accumulated}/${segments[i]}` : segments[i];
+                seededHistory.push(accumulated);
+            }
+            leaf.view.history = seededHistory;
+            leaf.view.forwardHistory = [];
+            leaf.view.navigateTo(targetPath, false);
         }
         this.app.workspace.revealLeaf(leaf);
     }
