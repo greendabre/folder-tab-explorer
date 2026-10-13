@@ -1,4 +1,4 @@
-const { Plugin, ItemView, TFolder, TFile, Notice, Menu } = require("obsidian");
+const { Plugin, ItemView, TFolder, TFile, Notice, Menu, PluginSettingTab, Setting } = require("obsidian");
 
 const VIEW_TYPE_WINDOWS_EXPLORER = "windows-explorer-tab-view";
 
@@ -15,6 +15,8 @@ class WindowsExplorerTabView extends ItemView {
         this.typeaheadQuery = "";
         this.typeaheadTimeout = null;
         this.isMarqueeDragging = false;
+		this.isRenaming = false;
+		this.expandedPaths = new Set();
     }
 
     getViewType() {
@@ -127,11 +129,35 @@ class WindowsExplorerTabView extends ItemView {
     }
 
     loadFolderContents(folder) {
-        this.items = [...folder.children].sort((a, b) => {
-            if (a instanceof TFolder && b instanceof TFile) return -1;
-            if (a instanceof TFile && b instanceof TFolder) return 1;
-            return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-        });
+        if (!this.isLeftmostTab()) {
+            this.items = [...folder.children].sort((a, b) => {
+                if (a instanceof TFolder && b instanceof TFile) return -1;
+                if (a instanceof TFile && b instanceof TFolder) return 1;
+                return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+            });
+            return;
+        }
+
+        // Build a flattened view of expanded tree items for the leftmost tab
+        const flattened = [];
+        const traverse = (dir, depth = 0) => {
+            const children = [...dir.children].sort((a, b) => {
+                if (a instanceof TFolder && b instanceof TFile) return -1;
+                if (a instanceof TFile && b instanceof TFolder) return 1;
+                return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+            });
+
+            for (const child of children) {
+                child._depth = depth;
+                flattened.push(child);
+                if (child instanceof TFolder && this.expandedPaths.has(child.path)) {
+                    traverse(child, depth + 1);
+                }
+            }
+        };
+
+        traverse(folder, 0);
+        this.items = flattened;
     }
 
     renderView() {
@@ -279,6 +305,8 @@ class WindowsExplorerTabView extends ItemView {
             }
         });
 
+        const isLeftmost = this.isLeftmostTab();
+
         this.items.forEach((item, index) => {
             const row = listContainer.createDiv({
                 cls: `win-item-row ${item instanceof TFolder ? "is-folder" : "is-file"}`
@@ -286,6 +314,38 @@ class WindowsExplorerTabView extends ItemView {
             row.dataset.path = item.path;
             row.dataset.index = index.toString();
             row.draggable = true;
+
+            // Apply indentation for nested subfolders in leftmost tab
+            const depth = item._depth || 0;
+            if (depth > 0) {
+                row.style.paddingLeft = `${depth * 18 + 8}px`;
+            }
+
+            // Arrow toggle for expandable folders in leftmost tab
+            if (isLeftmost) {
+                if (item instanceof TFolder) {
+                    const isExpanded = this.expandedPaths.has(item.path);
+                    const arrow = row.createDiv({
+                        cls: "win-item-arrow",
+                        text: isExpanded ? "▼" : "▶"
+                    });
+                    arrow.onclick = (e) => {
+                        e.stopPropagation();
+                        if (this.expandedPaths.has(item.path)) {
+                            this.expandedPaths.delete(item.path);
+                        } else {
+                            this.expandedPaths.add(item.path);
+                        }
+                        this.refresh();
+                    };
+                } else {
+                    row.createDiv({ cls: "win-item-arrow is-spacer" });
+                }
+            }
+
+            row.createDiv({ cls: "win-item-icon", text: item instanceof TFolder ? "📁" : "📄" });
+            const labelContainer = row.createDiv({ cls: "win-item-label-container" });
+            const label = labelContainer.createDiv({ cls: "win-item-label", text: item.name });
 
             // Drag Start
             row.addEventListener("dragstart", (e) => {
@@ -323,10 +383,6 @@ class WindowsExplorerTabView extends ItemView {
                 });
             }
 
-            row.createDiv({ cls: "win-item-icon", text: item instanceof TFolder ? "📁" : "📄" });
-            const labelContainer = row.createDiv({ cls: "win-item-label-container" });
-            const label = labelContainer.createDiv({ cls: "win-item-label", text: item.name });
-
             // Selection Logic
             row.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -343,6 +399,11 @@ class WindowsExplorerTabView extends ItemView {
                     this.selectedPaths.clear();
                     this.selectedPaths.add(item.path);
                     this.lastSelectedIndex = index;
+
+                    // If clicking a folder in the leftmost pane without modifiers, project it to the right
+                    if (item instanceof TFolder && this.isLeftmostTab()) {
+                        this.openOrUpdateRightPane(item.path);
+                    }
                 }
                 this.updateSelectionVisuals(listContainer);
             });
@@ -395,8 +456,28 @@ class WindowsExplorerTabView extends ItemView {
         this.selectedPaths.clear();
         const min = Math.min(start, end);
         const max = Math.max(start, end);
+
+        // Determine reference parent based on anchor item
+        const anchorItem = this.items[this.lastSelectedIndex !== -1 ? this.lastSelectedIndex : start];
+        const targetParentPath = anchorItem?.parent?.path ?? "";
+
+        // Only select items that share the exact same parent directory level
         for (let i = min; i <= max; i++) {
-            this.selectedPaths.add(this.items[i].path);
+            const item = this.items[i];
+            const itemParentPath = item?.parent?.path ?? "";
+            if (itemParentPath === targetParentPath) {
+                this.selectedPaths.add(item.path);
+            }
+        }
+
+        // Pruning guard: Ensure no selected folder is an ancestor of another selected item
+        const selectedArray = Array.from(this.selectedPaths);
+        for (const path of selectedArray) {
+            for (const otherPath of selectedArray) {
+                if (path !== otherPath && otherPath.startsWith(path + "/")) {
+                    this.selectedPaths.delete(otherPath);
+                }
+            }
         }
     }
 
@@ -421,6 +502,54 @@ class WindowsExplorerTabView extends ItemView {
             }
         });
     }
+	
+	isLeftmostTab() {
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_WINDOWS_EXPLORER);
+        if (leaves.length <= 1) return true;
+
+        const myRect = this.containerEl.getBoundingClientRect();
+        for (const other of leaves) {
+            if (other === this.leaf) continue;
+            const otherRect = other.view.containerEl.getBoundingClientRect();
+            // If another explorer leaf has a noticeably smaller horizontal offset, this is not the leftmost
+            if (otherRect.left < myRect.left - 5) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    async openOrUpdateRightPane(folderPath) {
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_WINDOWS_EXPLORER);
+        if (leaves.length === 0) return;
+
+        // Sort all open explorer leaves by spatial/layout position (left-to-right, then top-to-bottom)
+        const sortedLeaves = [...leaves].sort((a, b) => {
+            const rectA = a.view.containerEl.getBoundingClientRect();
+            const rectB = b.view.containerEl.getBoundingClientRect();
+            if (Math.abs(rectA.left - rectB.left) > 5) {
+                return rectA.left - rectB.left;
+            }
+            return rectA.top - rectB.top;
+        });
+
+        // The leftmost tab is index 0
+        const leftmostLeaf = sortedLeaves[0];
+
+        // Only the leftmost tab triggers this action
+        if (this.leaf !== leftmostLeaf) return;
+
+        // Target the very next explorer tab immediately after the leftmost one (index 1)
+        const targetLeaf = sortedLeaves[1];
+
+        if (targetLeaf && targetLeaf.view instanceof WindowsExplorerTabView) {
+            this.app.workspace.revealLeaf(targetLeaf);
+            targetLeaf.view.navigateTo(folderPath);
+        } else {
+            // If no second explorer tab exists anywhere, open one in a vertical split to the right
+            await this.plugin.openExplorerTab(folderPath, true);
+        }
+    }
 
     openItem(item) {
         if (item instanceof TFolder) {
@@ -431,6 +560,26 @@ class WindowsExplorerTabView extends ItemView {
     }
 
     handleKeyNavigation(e, listContainer) {
+        if (this.isRenaming) return;
+
+        // Do not intercept keystrokes if the user is typing in an editor, input field, or modal
+        const active = document.activeElement;
+        if (
+            active &&
+            (active.tagName === "INPUT" ||
+             active.tagName === "TEXTAREA" ||
+             active.isContentEditable ||
+             active.closest(".cm-editor") ||
+             active.closest(".modal"))
+        ) {
+            return;
+        }
+
+        // Only handle navigation if focus is actually inside this explorer view
+        if (!this.containerEl.contains(active)) {
+            return;
+        }
+
         // Cut / Copy / Paste Shortcuts
         if (e.ctrlKey || e.metaKey) {
             if (e.key.toLowerCase() === "c") {
@@ -523,41 +672,44 @@ class WindowsExplorerTabView extends ItemView {
     }
 
     beginInlineRename(item, labelContainer, label) {
+        this.isRenaming = true;
         const row = labelContainer.closest(".win-item-row");
         if (row) {
             row.draggable = false;
         }
 
         label.style.display = "none";
-        const input = labelContainer.createEl("input", {
-            cls: "win-rename-input",
-            value: item.name
-        });
-        input.focus();
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "win-rename-input";
+        input.value = item.name;
+        labelContainer.appendChild(input);
 
-        // Prevent row selection, dragging, and container focus shifts when selecting text in input
-        input.addEventListener("mousedown", (e) => e.stopPropagation());
-        input.addEventListener("click", (e) => e.stopPropagation());
-        input.addEventListener("dblclick", (e) => e.stopPropagation());
+        // Prevent container and leaf from capturing mouse clicks
+        const stopEvent = (e) => {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        };
 
-        if (item instanceof TFile && item.extension) {
-            const extLength = item.extension.length + 1;
-            input.setSelectionRange(0, item.name.length - extLength);
-        } else {
-            input.select();
-        }
+        input.addEventListener("mousedown", stopEvent);
+        input.addEventListener("mouseup", stopEvent);
+        input.addEventListener("click", stopEvent);
+        input.addEventListener("dblclick", stopEvent);
 
-        const restoreRow = () => {
+        const cleanup = () => {
+            this.isRenaming = false;
             if (row) {
                 row.draggable = true;
             }
+            input.remove();
+            label.style.display = "";
+            const container = this.containerEl.querySelector(".win-explorer-root");
+            if (container) container.focus();
         };
 
         const commitRename = async () => {
-            restoreRow();
             const newName = input.value.trim();
-            input.remove();
-            label.style.display = "";
+            cleanup();
 
             if (newName && newName !== item.name) {
                 const parentPath = item.parent && item.parent.path !== "/" ? item.parent.path : "";
@@ -571,31 +723,63 @@ class WindowsExplorerTabView extends ItemView {
             }
         };
 
-        input.addEventListener("blur", () => commitRename());
+        // Trap keystrokes on the input element
         input.addEventListener("keydown", (e) => {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
             if (e.key === "Enter") {
+                e.preventDefault();
                 commitRename();
             } else if (e.key === "Escape") {
-                restoreRow();
-                input.remove();
-                label.style.display = "";
+                e.preventDefault();
+                cleanup();
+            }
+        });
+
+        input.addEventListener("keyup", (e) => {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+
+        input.addEventListener("keypress", (e) => {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        });
+
+        input.addEventListener("blur", () => {
+            commitRename();
+        });
+
+        // Focus and select text
+        requestAnimationFrame(() => {
+            input.focus();
+            if (item instanceof TFile && item.extension) {
+                const extLength = item.extension.length + 1;
+                input.setSelectionRange(0, item.name.length - extLength);
+            } else {
+                input.select();
             }
         });
     }
 
     async deleteSelected() {
         if (this.selectedPaths.size === 0) return;
-        const confirmMsg = `Send ${this.selectedPaths.size} item(s) to trash?`;
-        if (confirm(confirmMsg)) {
-            for (const path of this.selectedPaths) {
-                const file = this.app.vault.getAbstractFileByPath(path);
-                if (file) {
-                    await this.app.vault.trash(file, true);
-                }
-            }
-            this.selectedPaths.clear();
-            this.refresh();
+
+        const shouldConfirm = this.plugin?.settings?.confirmDelete ?? true;
+        if (shouldConfirm) {
+            const confirmMsg = `Send ${this.selectedPaths.size} item(s) to trash?`;
+            if (!confirm(confirmMsg)) return;
         }
+
+        for (const path of this.selectedPaths) {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            if (file) {
+                await this.app.vault.trash(file, true);
+            }
+        }
+        this.selectedPaths.clear();
+        this.refresh();
     }
 
 async createNewItem(type, targetFolder) {
@@ -705,7 +889,13 @@ async createNewItem(type, targetFolder) {
 
             menu.addItem((i) =>
                 i.setTitle("Open in new explorer tab").setIcon("external-link").onClick(() => {
-                    this.plugin.openExplorerTab(item.path);
+                    this.plugin.openExplorerTab(item.path, false);
+                })
+            );
+
+            menu.addItem((i) =>
+                i.setTitle("Open in new explorer tab to the right").setIcon("split").onClick(() => {
+                    this.plugin.openExplorerTab(item.path, true);
                 })
             );
             menu.addSeparator();
@@ -942,10 +1132,37 @@ async createNewItem(type, targetFolder) {
     }
 }
 
+class WindowsExplorerSettingTab extends PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display() {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        new Setting(containerEl)
+            .setName("Confirm before deleting")
+            .setDesc("Show a confirmation prompt when deleting files or folders.")
+            .addToggle((toggle) =>
+                toggle
+                    .setValue(this.plugin.settings.confirmDelete)
+                    .onChange(async (value) => {
+                        this.plugin.settings.confirmDelete = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
+    }
+}
+
 class WindowsExplorerPlugin extends Plugin {
     async onload() {
         this.clipboard = null;
         this.draggedPaths = [];
+
+        await this.loadSettings();
+        this.addSettingTab(new WindowsExplorerSettingTab(this.app, this));
 
         this.registerView(
             VIEW_TYPE_WINDOWS_EXPLORER,
@@ -969,6 +1186,14 @@ class WindowsExplorerPlugin extends Plugin {
         });
     }
 
+    async loadSettings() {
+        this.settings = Object.assign({ confirmDelete: true }, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
     notifyClipboardUpdate() {
         const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_WINDOWS_EXPLORER);
         for (const leaf of leaves) {
@@ -981,16 +1206,18 @@ class WindowsExplorerPlugin extends Plugin {
         }
     }
 
-    async openExplorerTab(targetPath = "") {
-        const leaf = this.app.workspace.getLeaf("tab");
+    async openExplorerTab(targetPath = "", splitRight = false) {
+        const leaf = splitRight 
+            ? this.app.workspace.getLeaf("split", "vertical")
+            : this.app.workspace.getLeaf("tab");
+
         await leaf.setViewState({
             type: VIEW_TYPE_WINDOWS_EXPLORER,
             active: true
         });
         if (leaf.view instanceof WindowsExplorerTabView && targetPath) {
-            // Seed parent history chain so the back button navigates one level up
             const segments = targetPath.replace(/^\/+|\/+$/g, "").split("/");
-            const seededHistory = [""]; // Vault root
+            const seededHistory = [""];
             let accumulated = "";
             for (let i = 0; i < segments.length - 1; i++) {
                 accumulated = accumulated ? `${accumulated}/${segments[i]}` : segments[i];
