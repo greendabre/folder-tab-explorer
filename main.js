@@ -313,7 +313,7 @@ class WindowsExplorerTabView extends ItemView {
             });
             row.dataset.path = item.path;
             row.dataset.index = index.toString();
-            row.draggable = true;
+            row.draggable = !this.isRenaming;
 
             // Apply indentation for nested subfolders in leftmost tab
             const depth = item._depth || 0;
@@ -602,22 +602,44 @@ class WindowsExplorerTabView extends ItemView {
             }
         }
 
-        // Arrow Navigation
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        // Navigation Keys (Arrows, Home, End, PageUp, PageDown)
+        if (["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(e.key)) {
             e.preventDefault();
-            let nextIndex = this.lastSelectedIndex;
-            if (e.key === "ArrowDown") nextIndex = Math.min(this.items.length - 1, nextIndex + 1);
-            if (e.key === "ArrowUp") nextIndex = Math.max(0, nextIndex - 1);
+            if (this.items.length === 0) return;
+
+            let nextIndex = this.lastSelectedIndex === -1 ? 0 : this.lastSelectedIndex;
+            const pageSize = Math.max(1, Math.floor(listContainer.clientHeight / 28));
+
+            if (e.key === "ArrowDown") {
+                nextIndex = Math.min(this.items.length - 1, nextIndex + 1);
+            } else if (e.key === "ArrowUp") {
+                nextIndex = Math.max(0, nextIndex - 1);
+            } else if (e.key === "Home") {
+                nextIndex = 0;
+            } else if (e.key === "End") {
+                nextIndex = this.items.length - 1;
+            } else if (e.key === "PageDown") {
+                nextIndex = Math.min(this.items.length - 1, nextIndex + pageSize);
+            } else if (e.key === "PageUp") {
+                nextIndex = Math.max(0, nextIndex - pageSize);
+            }
 
             if (e.shiftKey) {
                 this.handleRangeSelect(this.lastSelectedIndex !== -1 ? this.lastSelectedIndex : 0, nextIndex);
             } else {
                 this.selectedPaths.clear();
-                this.selectedPaths.add(this.items[nextIndex].path);
+                const targetItem = this.items[nextIndex];
+                this.selectedPaths.add(targetItem.path);
                 this.lastSelectedIndex = nextIndex;
+
+                // Project folder contents to right pane when navigating via keyboard in the leftmost tab
+                if (targetItem instanceof TFolder && this.isLeftmostTab()) {
+                    this.openOrUpdateRightPane(targetItem.path);
+                }
             }
+
             this.updateSelectionVisuals(listContainer);
-            const targetRow = listContainer.querySelector(`[data-path="${this.items[nextIndex].path}"]`);
+            const targetRow = listContainer.querySelector(`[data-path="${CSS.escape(this.items[nextIndex].path)}"]`);
             if (targetRow) targetRow.scrollIntoView({ block: "nearest" });
             return;
         }
@@ -631,15 +653,7 @@ class WindowsExplorerTabView extends ItemView {
         }
 
         if (e.key === "F2") {
-            if (this.selectedPaths.size === 1) {
-                const target = this.items.find(i => this.selectedPaths.has(i.path));
-                const targetRow = listContainer.querySelector(`[data-path="${target ? target.path : ""}"]`);
-                if (target && targetRow) {
-                    const labelContainer = targetRow.querySelector(".win-item-label-container");
-                    const label = targetRow.querySelector(".win-item-label");
-                    this.beginInlineRename(target, labelContainer, label);
-                }
-            }
+            this.triggerRenameForSelected();
             return;
         }
 
@@ -667,6 +681,41 @@ class WindowsExplorerTabView extends ItemView {
                 this.updateSelectionVisuals(listContainer);
                 const targetRow = listContainer.querySelector(`[data-path="${this.items[matchIndex].path}"]`);
                 if (targetRow) targetRow.scrollIntoView({ block: "nearest" });
+            }
+        }
+    }
+	
+	openMoveModalForSelected() {
+        if (this.selectedPaths.size === 0) return;
+        const allFolders = this.app.vault.getAllLoadedFiles().filter(f => f instanceof TFolder);
+        
+        const fuzzyModal = new (require("obsidian").FuzzySuggestModal)(this.app);
+        fuzzyModal.getItems = () => allFolders;
+        fuzzyModal.getItemText = (folder) => folder.path === "/" ? "/" : folder.path;
+        fuzzyModal.onChooseItem = async (folder) => {
+            const destPath = folder.path === "/" ? "" : folder.path;
+            const paths = Array.from(this.selectedPaths);
+            await this.moveItems(paths, destPath);
+        };
+        fuzzyModal.setPlaceholder("Move selected item(s) to folder...");
+        fuzzyModal.open();
+    }
+	
+	triggerRenameForSelected() {
+        if (this.selectedPaths.size !== 1) return;
+        const targetPath = Array.from(this.selectedPaths)[0];
+        const target = this.app.vault.getAbstractFileByPath(targetPath);
+        if (!target) return;
+
+        const container = this.containerEl.querySelector(".win-items-area");
+        if (!container) return;
+
+        const targetRow = container.querySelector(`[data-path="${CSS.escape(target.path)}"]`);
+        if (targetRow) {
+            const labelContainer = targetRow.querySelector(".win-item-label-container");
+            const label = targetRow.querySelector(".win-item-label");
+            if (labelContainer && label) {
+                this.beginInlineRename(target, labelContainer, label);
             }
         }
     }
@@ -772,13 +821,20 @@ class WindowsExplorerTabView extends ItemView {
             if (!confirm(confirmMsg)) return;
         }
 
-        for (const path of this.selectedPaths) {
+        // Snapshot and sort deepest paths first to prevent parent deletions from breaking child references
+        const pathsToDelete = Array.from(this.selectedPaths).sort((a, b) => b.length - a.length);
+        this.selectedPaths.clear();
+
+        for (const path of pathsToDelete) {
             const file = this.app.vault.getAbstractFileByPath(path);
             if (file) {
-                await this.app.vault.trash(file, true);
+                try {
+                    await this.app.vault.trash(file, true);
+                } catch (err) {
+                    new Notice(`Failed to delete ${file.name}: ${err.message}`);
+                }
             }
         }
-        this.selectedPaths.clear();
         this.refresh();
     }
 
@@ -925,7 +981,7 @@ async createNewItem(type, targetFolder) {
 
         menu.addItem((i) =>
             i.setTitle("Rename...").setIcon("pencil").onClick(() => {
-                this.beginInlineRename(item, labelContainer, label);
+                this.triggerRenameForSelected();
             })
         );
 
@@ -937,7 +993,16 @@ async createNewItem(type, targetFolder) {
 
         menu.addSeparator();
 
-        // Community plugins and core file options (Bookmarks, Move, Templater, Ask Gemini, etc.)
+        if (this.selectedPaths.size > 1) {
+            menu.addItem((i) =>
+                i.setTitle(`Move ${this.selectedPaths.size} items to...`).setIcon("folder-input").onClick(() => {
+                    this.openMoveModalForSelected();
+                })
+            );
+            menu.addSeparator();
+        }
+
+        // Community plugins and core file options (Bookmarks, Templater, Ask Gemini, etc.)
         this.app.workspace.trigger("file-menu", menu, item, "file-explorer", this.leaf);
 
         menu.showAtMouseEvent(e);
