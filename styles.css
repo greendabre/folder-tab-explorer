@@ -54,6 +54,9 @@
     border-radius: 2px;
     cursor: default;
     border: 1px solid transparent;
+    width: fit-content;
+    min-width: 220px;
+    max-width: 100%;
 }
 
 .win-item-row:hover {
